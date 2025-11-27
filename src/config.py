@@ -1,6 +1,7 @@
 """
 配置加载模块 - 负责加载和验证模板配置
 """
+
 import yaml
 import os
 from pathlib import Path

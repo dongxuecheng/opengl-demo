@@ -187,7 +187,47 @@ CLIP_DURATION = 8.0         # 每个片段时长（秒）
 TRANSITION_DURATION = 2.0   # 转场时长（秒）
 ```
 
-### 4. 运行渲染
+### 4. 配置字幕（可选）
+
+项目支持 **CPU 绘图 + GPU 贴图** 的字幕功能：
+
+```python
+# 字幕配置
+FONT_PATH = "fonts/NotoSansSC-Bold.otf"  # 字体路径
+FONT_SIZE = 72                            # 字体大小
+SUBTITLE_COLOR = (255, 255, 255, 255)    # 白色文字
+SUBTITLE_OUTLINE_COLOR = (0, 0, 0, 200)  # 黑色描边
+SUBTITLE_OUTLINE_WIDTH = 3                # 描边宽度
+```
+
+**字幕工作原理**：
+- 使用 **Pillow** 在 CPU 端绘制透明背景文字图片
+- 仅在文字内容变化时重新绘制（智能缓存）
+- 将文字作为 RGBA 纹理上传到 GPU
+- 通过 **Alpha 混合** shader 叠加到视频帧上
+
+**在代码中添加字幕**：
+
+```python
+# 在主循环的适当位置添加
+if i == 0 and frame_idx < int(3.0 * FPS):  # 第一个视频的前3秒
+    if frame_idx == 0:  # 只在第一帧渲染文字
+        subtitle_data = subtitle_renderer.render_text(
+            "欢迎大家收看VLOG",
+            color=SUBTITLE_COLOR,
+            outline_color=SUBTITLE_OUTLINE_COLOR,
+            outline_width=SUBTITLE_OUTLINE_WIDTH
+        )
+        subtitle_tex.write(subtitle_data)
+```
+
+**优势**：
+- ✅ 高性能：文字不变时无需重绘
+- ✅ 灵活：支持任意中文字体（.otf/.ttf）
+- ✅ 优雅：透明背景 + Alpha 混合，无黑边
+- ✅ 可控：字体大小、颜色、描边完全可配置
+
+### 5. 运行渲染
 
 ```bash
 docker run --rm -it \

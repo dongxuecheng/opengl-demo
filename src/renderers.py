@@ -1,6 +1,7 @@
 """
 渲染器模块 - 封装 OpenGL 渲染逻辑
 """
+
 import os
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont

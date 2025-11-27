@@ -16,7 +16,11 @@ from pathlib import Path
 # 导入自定义模块
 from src.config import TemplateConfig
 from src.renderers import BorderRenderer, SubtitleRenderer
-from src.shaders import create_transition_shader, create_overlay_shader, load_transitions
+from src.shaders import (
+    create_transition_shader,
+    create_overlay_shader,
+    load_transitions,
+)
 from src.video import VideoReader, create_encoder, merge_audio
 
 
@@ -71,9 +75,7 @@ class VlogRenderer:
         self.subtitle_prog["overlay_tex"].value = 1
 
         # 边框系统
-        self.border_renderer = BorderRenderer(
-            self.config.border["path"], WIDTH, HEIGHT
-        )
+        self.border_renderer = BorderRenderer(self.config.border["path"], WIDTH, HEIGHT)
         self.border_tex = self.ctx.texture((WIDTH, HEIGHT), 4)
         self.border_tex.write(self.border_renderer.get_texture_data())
         self.border_fbo = self.ctx.simple_framebuffer((WIDTH, HEIGHT), components=3)
@@ -88,7 +90,32 @@ class VlogRenderer:
     def _create_vao(self, program):
         """创建顶点数组对象（全屏四边形）"""
         vertices = np.array(
-            [-1, -1, 0, 0, 1, -1, 1, 0, -1, 1, 0, 1, -1, 1, 0, 1, 1, -1, 1, 0, 1, 1, 1, 1],
+            [
+                -1,
+                -1,
+                0,
+                0,
+                1,
+                -1,
+                1,
+                0,
+                -1,
+                1,
+                0,
+                1,
+                -1,
+                1,
+                0,
+                1,
+                1,
+                -1,
+                1,
+                0,
+                1,
+                1,
+                1,
+                1,
+            ],
             dtype="f4",
         )
         vbo = self.ctx.buffer(vertices)

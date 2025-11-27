@@ -1,27 +1,20 @@
-import time
 import subprocess
 import numpy as np
 import moderngl
 import ffmpeg
 import os
-import sys
+import re
 from pathlib import Path
+from PIL import Image, ImageDraw, ImageFont
+from datetime import datetime
 
-# ================= 用户配置区域 =================
-
-# 转场效果文件列表（按顺序使用，会自动循环）
+# ================= 配置参数 =================
 TRANSITION_FILES = [
-    "transitions/chromatic-rift.glsl",
-    "transitions/prismatic-veils.glsl",
-    "transitions/kinetic-lattice.glsl",
-    # "transitions/inverted-page-curl.glsl",
-    # "transitions/mosaic.glsl",
-    # "transitions/perlin.glsl",
-    # "transitions/stereo-viewer.glsl",
+    "transitions/ai5.glsl",
+    "transitions/ai3.glsl",
+    "transitions/ai2.glsl",
 ]
 
-
-# 你的视频文件列表
 INPUT_FILES = [f"examples/v{i}.mp4" for i in range(1, 7)]
 BGM_FILE = "examples/bgm.mp3"
 OUTPUT_TEMP = "temp_video_silent.mp4"
@@ -32,7 +25,19 @@ FPS = 25
 CLIP_DURATION = 8.0
 TRANSITION_DURATION = 2.0
 
-# ========================================================
+# 字幕配置
+FONT_PATH = "fonts/NotoSansSC-Bold.otf"
+FONT_SIZE = 72
+SUBTITLE_COLOR = (255, 255, 255, 255)  # 白色，完全不透明
+SUBTITLE_OUTLINE_COLOR = (0, 0, 0, 200)  # 黑色描边
+SUBTITLE_OUTLINE_WIDTH = 3
+TYPEWRITER_SPEED = 3  # 每隔几帧显示一个字符（3帧 = 0.12秒/字）
+SUBTITLE_DURATION = 6.0  # 字幕总显示时长（秒）
+
+# 边框配置
+BORDER_PATH = "border/border.png"
+
+# ================= 计算常量 =================
 FRAME_SIZE = WIDTH * HEIGHT * 3
 CLIP_FRAMES = int(CLIP_DURATION * FPS)
 TRANS_FRAMES = int(TRANSITION_DURATION * FPS)
@@ -40,22 +45,16 @@ SOLO_FRAMES = CLIP_FRAMES - TRANS_FRAMES
 
 
 class VideoReader:
+    """FFmpeg 视频解码器，流式读取帧数据"""
+
     def __init__(self, filename, is_last=False):
         self.filename = filename
-        self.last_valid_frame = None
+        self.last_valid_frame = bytes([0] * FRAME_SIZE)
         self.eof_reached = False
-        self.frames_read = 0
-        self.is_last = is_last
 
-        # 构建 FFmpeg 读取命令
-        # 1. -ss 0 放在最前面，确保从文件物理头部开始寻找
-        # 2. setpts=PTS-STARTPTS 强制把第一帧时间戳归零
-        # 3. 最后一个视频需要：转场时被消耗的TRANS_FRAMES + 主体播放的CLIP_FRAMES + 缓冲
-        if is_last:
-            # 最后一个视频：转场50帧 + 主体200帧 + 缓冲 = 250+缓冲帧
-            trim_duration = (TRANS_FRAMES + CLIP_FRAMES) / FPS + 1.0  # +1秒缓冲
-        else:
-            trim_duration = CLIP_DURATION
+        trim_duration = (
+            (TRANS_FRAMES + CLIP_FRAMES) / FPS + 1.0 if is_last else CLIP_DURATION
+        )
 
         self.process = (
             ffmpeg.input(filename, ss=0)
@@ -67,16 +66,11 @@ class VideoReader:
             .run_async(pipe_stdout=True, quiet=True)
         )
 
-        # 核心修改：移除超时逻辑，强制阻塞读取第一帧
-        # 即使 FFmpeg 需要 10秒 才能吐出第一帧，这里也会死等
-        # 绝不产生黑屏
-        self.preload_first_frame()
+        self._preload_first_frame()
 
-    def preload_first_frame(self):
-        print(f"   ⏳ 正在预读 {self.filename}...", end="", flush=True)
-
-        # 这是一个阻塞读取，会一直等到填满 FRAME_SIZE 个字节为止
-        # 除非进程崩溃(EOF)，否则不会返回空
+    def _preload_first_frame(self):
+        """阻塞式读取首帧，确保视频就绪"""
+        print(f"   ⏳ 预读 {self.filename}...", end="", flush=True)
         in_bytes = self.process.stdout.read(FRAME_SIZE)
 
         if len(in_bytes) == FRAME_SIZE:
@@ -84,37 +78,26 @@ class VideoReader:
             self.last_valid_frame = in_bytes
             print(" 就绪!")
         else:
-            # 只有当文件真的是坏的/空的，才会报错
-            print(" 失败! (无法读取数据)")
+            print(" 失败!")
             self.first_frame_buffer = None
-            # 这里可以抛出异常，或者用全黑兜底（但此时是因为文件真坏了）
-            self.last_valid_frame = bytes([0] * FRAME_SIZE)
 
     def read_frame(self):
-        # 优先消耗预读的那一帧
+        """读取一帧，EOF 后返回最后一帧"""
         if hasattr(self, "first_frame_buffer") and self.first_frame_buffer:
-            data = self.first_frame_buffer
+            frame = self.first_frame_buffer
             self.first_frame_buffer = None
-            self.frames_read += 1
-            return data
+            return frame
 
-        # 正常读取
         in_bytes = self.process.stdout.read(FRAME_SIZE)
-
         if len(in_bytes) == FRAME_SIZE:
             self.last_valid_frame = in_bytes
-            self.frames_read += 1
             return in_bytes
         else:
-            # 视频结束，返回最后一帧
             self.eof_reached = True
-            return (
-                self.last_valid_frame
-                if self.last_valid_frame
-                else bytes([0] * FRAME_SIZE)
-            )
+            return self.last_valid_frame
 
     def close(self):
+        """关闭 FFmpeg 进程"""
         if self.process:
             self.process.stdout.close()
             try:
@@ -123,105 +106,217 @@ class VideoReader:
                 pass
 
 
-def load_transition(filepath):
-    """加载转场效果GLSL文件"""
-    with open(filepath, "r") as f:
-        return f.read()
+class BorderRenderer:
+    """边框渲染器，加载 PNG 边框图片"""
+
+    def __init__(self, border_path, width, height):
+        self.width = width
+        self.height = height
+        self.texture_data = None
+        self.load_border(border_path)
+
+    def load_border(self, border_path):
+        """加载边框图片，转换为 RGBA 格式"""
+        if not os.path.exists(border_path):
+            raise FileNotFoundError(f"边框文件不存在: {border_path}")
+
+        img = Image.open(border_path).convert("RGBA")
+
+        # 确保尺寸匹配
+        if img.size != (self.width, self.height):
+            img = img.resize((self.width, self.height), Image.LANCZOS)
+
+        self.texture_data = img.tobytes("raw", "RGBA")
+        print(f"   ✓ 边框加载成功: {border_path} ({self.width}x{self.height})")
+
+    def get_texture_data(self):
+        """获取边框纹理数据"""
+        return self.texture_data
+
+
+class SubtitleRenderer:
+    """CPU 端字幕渲染器，生成透明背景文字纹理"""
+
+    def __init__(self, font_path, font_size, width, height):
+        self.width = width
+        self.height = height
+        self.font = ImageFont.truetype(font_path, font_size)
+        self.current_text = None
+        self.texture_data = None
+
+    def render_text(
+        self,
+        text,
+        color=(255, 255, 255, 255),
+        outline_color=(0, 0, 0, 200),
+        outline_width=3,
+    ):
+        """渲染文字到 RGBA 图像，仅在文字变化时重新绘制"""
+        if text == self.current_text and self.texture_data is not None:
+            return self.texture_data  # 缓存命中，不重新绘制
+
+        # 创建透明背景图像
+        img = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+
+        # 计算文字位置（底部居中）
+        bbox = draw.textbbox((0, 0), text, font=self.font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        x = (self.width - text_width) // 2
+        y = self.height - text_height - 100  # 距离底部 100 像素
+
+        # 绘制描边
+        if outline_width > 0:
+            for offset_x in range(-outline_width, outline_width + 1):
+                for offset_y in range(-outline_width, outline_width + 1):
+                    if offset_x != 0 or offset_y != 0:
+                        draw.text(
+                            (x + offset_x, y + offset_y),
+                            text,
+                            font=self.font,
+                            fill=outline_color,
+                        )
+
+        # 绘制主文字
+        draw.text((x, y), text, font=self.font, fill=color)
+
+        # 转换为 RGBA 字节数据
+        self.texture_data = img.tobytes("raw", "RGBA")
+        self.current_text = text
+        return self.texture_data
+
+    def clear(self):
+        """清除字幕（返回全透明纹理）"""
+        if self.current_text is None:
+            return self.texture_data
+
+        self.current_text = None
+        img = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
+        self.texture_data = img.tobytes("raw", "RGBA")
+        return self.texture_data
 
 
 def create_shader_program(ctx, transition_source):
-    """创建shader程序"""
-    import re
-
-    # 检查转场源码中是否已经**定义**了这些函数（不是仅仅使用）
-    # 匹配函数定义模式: vec4 getFromColor(...) 或 float rand(...)
-    has_getFromColor_def = bool(
-        re.search(r"\bvec4\s+getFromColor\s*\(", transition_source)
-    )
-    has_getToColor_def = bool(re.search(r"\bvec4\s+getToColor\s*\(", transition_source))
-    has_rand_def = bool(
-        re.search(r"\bfloat\s+rand\s*\(", transition_source, re.IGNORECASE)
-    )
-
-    # 只在转场源码中没有定义时才添加这些函数
-    helper_functions = ""
-    if not has_getFromColor_def:
-        helper_functions += (
-            "vec4 getFromColor(vec2 uv) { return texture(tex0, uv); }\n        "
+    """创建 GLSL shader 程序，自动补充缺失的辅助函数"""
+    helpers = []
+    if not re.search(r"\bvec4\s+getFromColor\s*\(", transition_source):
+        helpers.append("vec4 getFromColor(vec2 uv) { return texture(tex0, uv); }")
+    if not re.search(r"\bvec4\s+getToColor\s*\(", transition_source):
+        helpers.append("vec4 getToColor(vec2 uv) { return texture(tex1, uv); }")
+    if not re.search(r"\bfloat\s+rand\s*\(", transition_source, re.IGNORECASE):
+        helpers.append(
+            "float rand(vec2 co) { return fract(sin(dot(co.xy, vec2(12.9898, 78.233))) * 43758.5453); }"
         )
-    if not has_getToColor_def:
-        helper_functions += (
-            "vec4 getToColor(vec2 uv) { return texture(tex1, uv); }\n        "
-        )
-    if not has_rand_def:
-        helper_functions += "float rand(vec2 co) { return fract(sin(dot(co.xy ,vec2(12.9898,78.233))) * 43758.5453); }\n        "
 
-    full_fragment_shader = f"""
+    fragment_shader = f"""
         #version 330
-        uniform sampler2D tex0;
-        uniform sampler2D tex1;
-        uniform float progress;
-        uniform float ratio;
+        uniform sampler2D tex0, tex1;
+        uniform float progress, ratio;
         in vec2 v_text;
         out vec4 f_color;
 
-        {helper_functions}
+        {chr(10).join(helpers)}
         {transition_source}
 
         void main() {{
-            if (progress <= 0.0) {{ f_color = texture(tex0, v_text); }} 
-            else if (progress >= 1.0) {{ f_color = texture(tex1, v_text); }} 
-            else {{ f_color = transition(v_text); }}
+            if (progress <= 0.0) f_color = texture(tex0, v_text);
+            else if (progress >= 1.0) f_color = texture(tex1, v_text);
+            else f_color = transition(v_text);
         }}
     """
 
-    prog = ctx.program(
-        vertex_shader="""#version 330
-        in vec2 in_vert; in vec2 in_text; out vec2 v_text;
-        void main() { gl_Position = vec4(in_vert, 0.0, 1.0); v_text = in_text; }""",
-        fragment_shader=full_fragment_shader,
-    )
-    return prog
+    vertex_shader = """
+        #version 330
+        in vec2 in_vert, in_text;
+        out vec2 v_text;
+        void main() { gl_Position = vec4(in_vert, 0.0, 1.0); v_text = in_text; }
+    """
+
+    return ctx.program(vertex_shader=vertex_shader, fragment_shader=fragment_shader)
 
 
-def main():
-    print("🚀 初始化 GPU 环境 (EGL)...")
-    try:
-        ctx = moderngl.create_context(standalone=True, backend="egl")
-    except:
-        ctx = moderngl.create_context(standalone=True)
+def create_subtitle_shader(ctx):
+    """创建字幕叠加 shader，将字幕纹理混合到视频帧上"""
+    vertex_shader = """
+        #version 330
+        in vec2 in_vert, in_text;
+        out vec2 v_text;
+        void main() { gl_Position = vec4(in_vert, 0.0, 1.0); v_text = in_text; }
+    """
 
-    tex0 = ctx.texture((WIDTH, HEIGHT), 3)
-    tex1 = ctx.texture((WIDTH, HEIGHT), 3)
-    fbo = ctx.simple_framebuffer((WIDTH, HEIGHT), components=3)
-    fbo.use()
+    fragment_shader = """
+        #version 330
+        uniform sampler2D video_tex;     // 视频帧纹理
+        uniform sampler2D subtitle_tex;  // 字幕纹理（RGBA）
+        in vec2 v_text;
+        out vec4 f_color;
 
-    # --- 加载所有转场效果 ---
-    print(f"📦 加载转场效果...")
+        void main() {
+            vec4 video = texture(video_tex, v_text);
+            vec4 subtitle = texture(subtitle_tex, v_text);
+            
+            // Alpha 混合：前景（字幕）叠加到背景（视频）
+            f_color.rgb = video.rgb * (1.0 - subtitle.a) + subtitle.rgb * subtitle.a;
+            f_color.a = 1.0;
+        }
+    """
+
+    return ctx.program(vertex_shader=vertex_shader, fragment_shader=fragment_shader)
+
+
+def create_border_shader(ctx):
+    """创建边框叠加 shader，将边框纹理混合到视频帧上"""
+    vertex_shader = """
+        #version 330
+        in vec2 in_vert, in_text;
+        out vec2 v_text;
+        void main() { gl_Position = vec4(in_vert, 0.0, 1.0); v_text = in_text; }
+    """
+
+    fragment_shader = """
+        #version 330
+        uniform sampler2D video_tex;   // 视频帧纹理
+        uniform sampler2D border_tex;  // 边框纹理（RGBA，中间透明）
+        in vec2 v_text;
+        out vec4 f_color;
+
+        void main() {
+            vec4 video = texture(video_tex, v_text);
+            vec4 border = texture(border_tex, v_text);
+            
+            // Alpha 混合：边框叠加到视频上层
+            f_color.rgb = video.rgb * (1.0 - border.a) + border.rgb * border.a;
+            f_color.a = 1.0;
+        }
+    """
+
+    return ctx.program(vertex_shader=vertex_shader, fragment_shader=fragment_shader)
+
+
+def load_transitions():
+    """加载所有转场效果 GLSL 文件"""
+    print("📦 加载转场效果...")
     transitions = []
-    for trans_file in TRANSITION_FILES:
-        if os.path.exists(trans_file):
-            trans_source = load_transition(trans_file)
-            transitions.append({"name": Path(trans_file).stem, "source": trans_source})
-            print(f"   ✓ {Path(trans_file).name}")
+    for filepath in TRANSITION_FILES:
+        if os.path.exists(filepath):
+            with open(filepath) as f:
+                transitions.append({"name": Path(filepath).stem, "source": f.read()})
+            print(f"   ✓ {Path(filepath).name}")
         else:
-            print(f"   ✗ 找不到文件: {trans_file}")
+            print(f"   ✗ 找不到: {filepath}")
 
     if not transitions:
-        print("❌ 错误: 没有加载到任何转场效果！")
-        return
+        raise FileNotFoundError("❌ 未加载任何转场效果")
 
-    print(f"   共加载 {len(transitions)} 个转场效果")
-    # --- 准备顶点数据 ---
-    vertices = np.array(
-        [-1, -1, 0, 0, 1, -1, 1, 0, -1, 1, 0, 1, -1, 1, 0, 1, 1, -1, 1, 0, 1, 1, 1, 1],
-        dtype="f4",
-    )
-    vertex_buffer = ctx.buffer(vertices)
+    print(f"   共 {len(transitions)} 个转场")
+    return transitions
 
-    # --- 编码器 (NVENC) ---
-    print("🎥 启动 FFmpeg 编码器...")
-    encoder = (
+
+def create_encoder():
+    """创建 FFmpeg NVENC 编码器"""
+    print("🎥 启动编码器...")
+    return (
         ffmpeg.input(
             "pipe:", format="rawvideo", pix_fmt="rgb24", s=f"{WIDTH}x{HEIGHT}", r=FPS
         )
@@ -230,105 +325,309 @@ def main():
             vcodec="h264_nvenc",
             pix_fmt="yuv420p",
             bitrate="15M",
-            preset="p4",  # 最快编码速度
-            rc="cbr",  # 恒定码率模式
-            **{
-                "rc-lookahead": "32",
-                "spatial-aq": "1",
-                "temporal-aq": "1",
-            },  # 启用空间和时间自适应量化
+            preset="p4",
+            rc="cbr",
+            **{"rc-lookahead": "32", "spatial-aq": "1", "temporal-aq": "1"},
         )
         .overwrite_output()
         .run_async(pipe_stdin=True, quiet=True)
     )
 
-    print(f"📂 开始渲染处理...")
 
-    # 关键修复：在开始渲染前清除framebuffer，避免黑屏
+def merge_audio():
+    """合并 BGM 到视频"""
+    if not os.path.exists(BGM_FILE):
+        os.rename(OUTPUT_TEMP, OUTPUT_FINAL)
+        return
+
+    print("🎵 合成 BGM...")
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            OUTPUT_TEMP,
+            "-ss",
+            "0",
+            "-stream_loop",
+            "-1",
+            "-i",
+            BGM_FILE,
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-shortest",
+            "-fflags",
+            "+genpts",
+            OUTPUT_FINAL,
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    os.remove(OUTPUT_TEMP)
+
+
+def main():
+    print("🚀 初始化 GPU 环境...")
+    ctx = moderngl.create_context(standalone=True, backend="egl")
+    tex0, tex1 = ctx.texture((WIDTH, HEIGHT), 3), ctx.texture((WIDTH, HEIGHT), 3)
+    fbo = ctx.simple_framebuffer((WIDTH, HEIGHT), components=3)
+    fbo.use()
     fbo.clear(0.0, 0.0, 0.0, 1.0)
 
-    # 创建shader程序并设置静态uniform
-    current_transition_idx = 0
-    prog = create_shader_program(ctx, transitions[0]["source"])
-    vao = ctx.vertex_array(prog, [(vertex_buffer, "2f 2f", "in_vert", "in_text")])
+    # 初始化字幕系统
+    print("📝 初始化字幕渲染器...")
+    subtitle_renderer = SubtitleRenderer(FONT_PATH, FONT_SIZE, WIDTH, HEIGHT)
+    subtitle_tex = ctx.texture((WIDTH, HEIGHT), 4)  # RGBA 纹理
+    video_temp_tex = ctx.texture((WIDTH, HEIGHT), 3)  # 临时存储视频帧
+    subtitle_fbo = ctx.simple_framebuffer((WIDTH, HEIGHT), components=3)  # 字幕合成 FBO
 
-    # 一次性设置静态uniform
+    # 创建字幕叠加 shader
+    subtitle_prog = create_subtitle_shader(ctx)
+    subtitle_vbo = ctx.buffer(
+        np.array(
+            [
+                -1,
+                -1,
+                0,
+                0,
+                1,
+                -1,
+                1,
+                0,
+                -1,
+                1,
+                0,
+                1,
+                -1,
+                1,
+                0,
+                1,
+                1,
+                -1,
+                1,
+                0,
+                1,
+                1,
+                1,
+                1,
+            ],
+            dtype="f4",
+        )
+    )
+    subtitle_vao = ctx.vertex_array(
+        subtitle_prog, [(subtitle_vbo, "2f 2f", "in_vert", "in_text")]
+    )
+    subtitle_prog["video_tex"].value = 0
+    subtitle_prog["subtitle_tex"].value = 1
+
+    # 初始化边框系统
+    print("🖼️  初始化边框渲染器...")
+    border_renderer = BorderRenderer(BORDER_PATH, WIDTH, HEIGHT)
+    border_tex = ctx.texture((WIDTH, HEIGHT), 4)  # RGBA 纹理
+    border_tex.write(border_renderer.get_texture_data())
+    border_temp_tex = ctx.texture((WIDTH, HEIGHT), 3)  # 临时存储当前帧
+    border_fbo = ctx.simple_framebuffer((WIDTH, HEIGHT), components=3)  # 边框合成 FBO
+
+    # 创建边框叠加 shader
+    border_prog = create_border_shader(ctx)
+    border_vbo = ctx.buffer(
+        np.array(
+            [
+                -1,
+                -1,
+                0,
+                0,
+                1,
+                -1,
+                1,
+                0,
+                -1,
+                1,
+                0,
+                1,
+                -1,
+                1,
+                0,
+                1,
+                1,
+                -1,
+                1,
+                0,
+                1,
+                1,
+                1,
+                1,
+            ],
+            dtype="f4",
+        )
+    )
+    border_vao = ctx.vertex_array(
+        border_prog, [(border_vbo, "2f 2f", "in_vert", "in_text")]
+    )
+    border_prog["video_tex"].value = 0
+    border_prog["border_tex"].value = 1
+
+    transitions = load_transitions()
+
+    # 创建顶点数据和着色器
+    vertices = np.array(
+        [-1, -1, 0, 0, 1, -1, 1, 0, -1, 1, 0, 1, -1, 1, 0, 1, 1, -1, 1, 0, 1, 1, 1, 1],
+        dtype="f4",
+    )
+    vbo = ctx.buffer(vertices)
+
+    encoder = create_encoder()
+    print("📂 开始渲染...")
+
+    # 初始化着色器程序
+    prog = create_shader_program(ctx, transitions[0]["source"])
+    vao = ctx.vertex_array(prog, [(vbo, "2f 2f", "in_vert", "in_text")])
     tex0.use(0)
-    prog["tex0"].value = 0
     tex1.use(1)
+    prog["tex0"].value = 0
     prog["tex1"].value = 1
     if "ratio" in prog:
         prog["ratio"].value = WIDTH / HEIGHT
 
-    total_encoded_frames = 0  # 统计写入编码器的帧数
+    total_frames = 0
     current_vid = None
+    current_transition_idx = 0
 
-    for i in range(len(INPUT_FILES)):
-        is_last_clip = i == len(INPUT_FILES) - 1
+    for i, input_file in enumerate(INPUT_FILES):
+        is_last = i == len(INPUT_FILES) - 1
 
-        # 加载当前视频（如果还没加载）
+        # 加载视频
         if current_vid is None:
-            current_vid = VideoReader(INPUT_FILES[i], is_last=is_last_clip)
+            current_vid = VideoReader(input_file, is_last=is_last)
 
-        next_vid = None
-        if not is_last_clip:
-            # 预加载下一个视频
-            next_vid = VideoReader(
-                INPUT_FILES[i + 1], is_last=(i + 1 == len(INPUT_FILES) - 1)
-            )
+        next_vid = (
+            VideoReader(INPUT_FILES[i + 1], is_last=(i + 1 == len(INPUT_FILES) - 1))
+            if not is_last
+            else None
+        )
 
-        # A. 主体播放
-        frames_to_play = CLIP_FRAMES if is_last_clip else SOLO_FRAMES
-
-        print(f"   📹 渲染视频 {i+1}/{len(INPUT_FILES)}: {frames_to_play} 帧")
+        # 主体播放
+        frames_to_play = CLIP_FRAMES if is_last else SOLO_FRAMES
+        print(f"   📹 视频 {i+1}/{len(INPUT_FILES)}: {frames_to_play} 帧")
 
         for frame_idx in range(frames_to_play):
-            raw = current_vid.read_frame()
-
-            # 检测是否已EOF，给出警告
-            if current_vid.eof_reached and frame_idx < frames_to_play - 1:
-                print(
-                    f"   ⚠️  警告: 视频 {i+1} 在第 {frame_idx}/{frames_to_play} 帧处EOF，剩余帧使用最后一帧"
-                )
-
-            tex0.write(raw)
+            # 渲染视频帧到主 FBO
+            tex0.write(current_vid.read_frame())
             prog["progress"].value = 0.0
+            fbo.use()  # 确保使用主 FBO
             vao.render()
-            encoder.stdin.write(fbo.read(components=3))
-            total_encoded_frames += 1
-        # B. 转场播放
-        if not is_last_clip and next_vid:
-            # 选择转场效果（循环使用）
-            transition = transitions[i % len(transitions)]
-            print(f"   ✨ 转场: {i+1} -> {i+2} (使用: {transition['name']})")
 
-            # 如果转场效果改变，重新创建shader程序
+            # 字幕叠加（打字机效果）
+            subtitle_frame_count = int(SUBTITLE_DURATION * FPS)
+            if i == 0 and frame_idx < subtitle_frame_count:
+                # 生成完整字幕文本（仅在第一帧）
+                if frame_idx == 0:
+                    current_date = datetime.now()
+                    full_subtitle_text = f"《{current_date.year}年{current_date.month}月{current_date.day}日，长沙卷烟厂安全体验馆留念》"
+                    print(f"      💬 字幕: {full_subtitle_text}")
+
+                # 计算当前应显示的字符数（打字机效果）
+                chars_to_show = (frame_idx // TYPEWRITER_SPEED) + 1
+                display_text = full_subtitle_text[:chars_to_show]
+
+                # 每隔 TYPEWRITER_SPEED 帧更新一次字幕纹理
+                if frame_idx % TYPEWRITER_SPEED == 0 or frame_idx == 0:
+                    subtitle_data = subtitle_renderer.render_text(
+                        display_text,
+                        color=SUBTITLE_COLOR,
+                        outline_color=SUBTITLE_OUTLINE_COLOR,
+                        outline_width=SUBTITLE_OUTLINE_WIDTH,
+                    )
+                    subtitle_tex.write(subtitle_data)
+
+                # 将视频帧复制到临时纹理
+                video_temp_tex.write(fbo.read(components=3))
+
+                # 步骤1: 边框叠加（视频 + 边框）
+                border_fbo.use()
+                video_temp_tex.use(0)
+                border_tex.use(1)
+                border_vao.render()
+
+                # 步骤2: 字幕叠加（在边框结果之上）
+                border_temp_tex.write(border_fbo.read(components=3))
+                subtitle_fbo.use()
+                border_temp_tex.use(0)
+                subtitle_tex.use(1)
+                subtitle_vao.render()
+
+                # 步骤3: 写入最终帧（只写入一次）
+                encoder.stdin.write(subtitle_fbo.read(components=3))
+
+                # 恢复主渲染状态
+                fbo.use()
+                tex0.use(0)
+                tex1.use(1)
+            else:
+                # 无字幕时，先叠加边框再写入
+                border_temp_tex.write(fbo.read(components=3))
+                border_fbo.use()
+                border_temp_tex.use(0)
+                border_tex.use(1)
+                border_vao.render()
+                encoder.stdin.write(border_fbo.read(components=3))
+
+                # 恢复主渲染状态
+                fbo.use()
+                tex0.use(0)
+                tex1.use(1)
+
+            total_frames += 1
+
+        # 转场播放
+        if not is_last and next_vid:
+            transition = transitions[i % len(transitions)]
+            print(f"   ✨ 转场 {i+1}→{i+2}: {transition['name']}")
+
+            # 转场效果切换时重新编译着色器
             if i % len(transitions) != current_transition_idx:
                 current_transition_idx = i % len(transitions)
                 prog = create_shader_program(ctx, transition["source"])
-                vao = ctx.vertex_array(
-                    prog, [(vertex_buffer, "2f 2f", "in_vert", "in_text")]
-                )
-                # 设置静态uniform
+                vao = ctx.vertex_array(prog, [(vbo, "2f 2f", "in_vert", "in_text")])
                 tex0.use(0)
-                prog["tex0"].value = 0
                 tex1.use(1)
+                prog["tex0"].value = 0
                 prog["tex1"].value = 1
                 if "ratio" in prog:
                     prog["ratio"].value = WIDTH / HEIGHT
 
             for j in range(TRANS_FRAMES):
-                raw_c = current_vid.read_frame()
-                raw_n = next_vid.read_frame()
-
-                tex0.write(raw_c)
-                tex1.write(raw_n)
-
-                # 只更新变化的uniform
+                tex0.write(current_vid.read_frame())
+                tex1.write(next_vid.read_frame())
                 prog["progress"].value = (j + 1) / TRANS_FRAMES
+
+                # 确保状态正确
+                fbo.use()  # 使用主 FBO
+                tex0.use(0)  # 绑定 tex0 到单元 0
+                tex1.use(1)  # 绑定 tex1 到单元 1
+
                 vao.render()
-                encoder.stdin.write(fbo.read(components=3))
-                total_encoded_frames += 1
+
+                # 转场帧也要叠加边框
+                border_temp_tex.write(fbo.read(components=3))
+                border_fbo.use()
+                border_temp_tex.use(0)
+                border_tex.use(1)
+                border_vao.render()
+                encoder.stdin.write(border_fbo.read(components=3))
+
+                # 恢复主渲染状态
+                fbo.use()
+                tex0.use(0)
+                tex1.use(1)
+
+                total_frames += 1
 
             current_vid.close()
             current_vid = next_vid
@@ -338,46 +637,9 @@ def main():
     encoder.stdin.close()
     encoder.wait()
 
-    print(
-        f"📊 总共写入编码器: {total_encoded_frames} 帧 ({total_encoded_frames/FPS:.2f}秒)"
-    )
-
-    # --- BGM 合成优化 ---
-    if os.path.exists(BGM_FILE):
-        print("🎵 合成 BGM...")
-        # 增加 -ss 0 到音频流，防止音频有封面图导致的偏移
-        subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-i",
-                OUTPUT_TEMP,
-                "-ss",
-                "0",
-                "-stream_loop",
-                "-1",
-                "-i",
-                BGM_FILE,
-                "-map",
-                "0:v:0",
-                "-map",
-                "1:a:0",  # 明确指定流映射
-                "-c:v",
-                "copy",
-                "-c:a",
-                "aac",
-                "-shortest",
-                "-fflags",
-                "+genpts",
-                OUTPUT_FINAL,
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        os.remove(OUTPUT_TEMP)
-        print(f"✅ 完成: {OUTPUT_FINAL}")
-    else:
-        os.rename(OUTPUT_TEMP, OUTPUT_FINAL)
+    print(f"📊 总帧数: {total_frames} ({total_frames/FPS:.1f}秒)")
+    merge_audio()
+    print(f"✅ 完成: {OUTPUT_FINAL}")
 
 
 if __name__ == "__main__":
