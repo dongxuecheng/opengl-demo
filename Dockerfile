@@ -41,6 +41,8 @@ RUN pip install \
     ffmpeg-python \
     numpy \
     pyglm \
+    Pillow \
+    PyYAML \
     -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
 # 7. 设置工作目录
 WORKDIR /app

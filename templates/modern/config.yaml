@@ -1,0 +1,31 @@
+# Modern 模板配置
+name: "Modern"
+description: "现代风格 - 适合年轻化场景"
+
+# 边框配置
+border:
+  path: "templates/modern/border.png"
+
+# 背景音乐
+bgm:
+  path: "templates/modern/bgm.mp3"
+
+# 转场效果列表
+transitions:
+  - "transitions/mosaic.glsl"
+  - "transitions/gridflip.glsl"
+  - "transitions/perlin.glsl"
+
+# 字体配置
+font:
+  path: "fonts/NotoSansSC-Medium.otf"
+  size: 68
+  color: [255, 255, 100, 255]  # 黄色
+  outline_color: [50, 50, 50, 220]
+  outline_width: 2
+
+# 字幕配置
+subtitle:
+  template: "📹 {year}.{month}.{day} | 安全体验馆记录"
+  typewriter_speed: 2
+  duration: 5.0

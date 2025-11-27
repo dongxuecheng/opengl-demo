@@ -1,0 +1,31 @@
+# Elegant 模板配置
+name: "Elegant"
+description: "优雅风格 - 适合艺术展示"
+
+# 边框配置
+border:
+  path: "templates/elegant/border.png"
+
+# 背景音乐
+bgm:
+  path: "templates/elegant/bgm.mp3"
+
+# 转场效果列表
+transitions:
+  - "transitions/inverted-page-curl.glsl"
+  - "transitions/stereo-viewer.glsl"
+  - "transitions/ai6.glsl"
+
+# 字体配置
+font:
+  path: "fonts/NotoSansSC-Light.otf"
+  size: 76
+  color: [240, 240, 255, 255]  # 淡蓝白色
+  outline_color: [20, 20, 40, 180]
+  outline_width: 4
+
+# 字幕配置
+subtitle:
+  template: "— {year}年{month}月{day}日 · 长沙卷烟厂 —"
+  typewriter_speed: 4
+  duration: 7.0

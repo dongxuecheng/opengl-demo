@@ -11,11 +11,18 @@ ENV/
 
 # Output files
 *.mp4
-*.mp3
 *.avi
 *.mov
 temp_*.mp4
 final_*.mp4
+
+# Audio files (exclude all mp3/wav/flac etc.)
+*.mp3
+*.wav
+*.flac
+*.aac
+*.ogg
+*.m4a
 
 # Logs
 *.log
@@ -39,5 +46,19 @@ examples/*.mp4
 examples/*.mp3
 examples/*.avi
 
-# Keep example structure
+# Fonts (exclude all font files)
+fonts/*.otf
+fonts/*.ttf
+fonts/*.woff
+fonts/*.woff2
+
+# Template resources (exclude large binary files)
+templates/**/border.png
+templates/**/bgm.mp3
+templates/**/*.mp3
+templates/**/*.wav
+
+# Keep directory structure
 !examples/.gitkeep
+!fonts/.gitkeep
+!templates/**/.gitkeep

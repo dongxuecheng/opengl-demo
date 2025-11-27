@@ -1,0 +1,31 @@
+# Classic 模板配置
+name: "Classic"
+description: "经典风格 - 适合正式场合"
+
+# 边框配置
+border:
+  path: "templates/classic/border.png"
+
+# 背景音乐
+bgm:
+  path: "templates/classic/bgm.mp3"
+
+# 转场效果列表
+transitions:
+  - "transitions/ai5.glsl"
+  - "transitions/ai3.glsl"
+  - "transitions/ai2.glsl"
+
+# 字体配置
+font:
+  path: "fonts/NotoSansSC-Bold.otf"
+  size: 72
+  color: [255, 255, 255, 255]  # RGBA
+  outline_color: [0, 0, 0, 200]
+  outline_width: 3
+
+# 字幕配置
+subtitle:
+  template: "《{year}年{month}月{day}日，长沙卷烟厂安全体验馆留念》"
+  typewriter_speed: 3  # 帧/字符
+  duration: 6.0  # 秒
