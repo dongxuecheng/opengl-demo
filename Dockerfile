@@ -43,13 +43,27 @@ RUN pip install \
     pyglm \
     Pillow \
     PyYAML \
+    fastapi \
+    "uvicorn[standard]" \
+    pydantic \
+    python-multipart \
     -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple
 # 7. 设置工作目录
 WORKDIR /app
 RUN mkdir -p /usr/share/glvnd/egl_vendor.d && \
     echo '{"file_format_version" : "1.0.0", "ICD" : {"library_path" : "libEGL_nvidia.so.0"}}' > /usr/share/glvnd/egl_vendor.d/10_nvidia.json
-# 8. 验证环境 (可选)
+
+# 8. 创建输出目录
+RUN mkdir -p /app/outputs
+
+# 9. 暴露 API 端口
+EXPOSE 8000
+
+# 10. 验证环境 (可选)
 # 打印一下版本信息确保安装成功
 RUN python -c "import moderngl; print(f'ModernGL Version: {moderngl.__version__}')"
+
+# 11. 默认启动 API 服务
+CMD ["python", "-m", "uvicorn", "api_server:app", "--host", "0.0.0.0", "--port", "8000"]
 
 CMD ["python"]

@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  video-renderer-api:
+    build: .
+    image: video-renderer-api:latest
+    container_name: video-renderer-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./:/app
+      - ./outputs:/app/outputs  # 持久化输出目录
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    devices:
+      - /dev/dri:/dev/dri
+    restart: unless-stopped
+    command: python -m uvicorn api_server:app --host 0.0.0.0 --port 8000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
