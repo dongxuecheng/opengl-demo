@@ -24,9 +24,11 @@ templates:
     bgm:
       path: "templates/classic/bgm.mp3"
     transitions:
-      - "transitions/ai5.glsl"
-      - "transitions/ai3.glsl"
-      - "transitions/ai2.glsl"
+      - "transitions/gridflip.glsl"
+      - "transitions/inverted-page-curl.glsl"
+      - "transitions/mosaic.glsl"
+      - "transitions/perlin.glsl"
+      - "transitions/stereo-viewer.glsl"
     font:
       path: "fonts/NotoSansSC-Bold.otf"
       size: 72
