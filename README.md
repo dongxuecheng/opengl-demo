@@ -12,6 +12,7 @@
 - 🎬 **电影级转场**: 基于 GPU Shader 的高性能转场特效，丝滑流畅
 - ⚡ **极速渲染**: 采用 NVENC 硬件编码，实现 1080P 视频的实时/超实时渲染
 - 🔌 **简单接口**: 提供极简的 HTTP API，轻松集成到任何系统
+- 🔄 **增量渲染** 🆕: 支持分段添加视频，无需重新编码，画质无损
 
 ## 🚀 快速开始
 
@@ -24,6 +25,10 @@ docker compose up -d
 服务将在 `http://localhost:8001` 启动。
 
 ### 2. 调用接口
+
+AutoVlog 提供两种渲染模式：
+
+#### 方式一：一次性渲染（传统模式）
 
 **接口地址**: `POST http://localhost:8001/api/render`
 
@@ -44,13 +49,86 @@ docker compose up -d
 http://localhost:8001/videos/202511271430.mp4
 ```
 
-视频文件按 `年月日时分.mp4` 格式命名（如：202511271430.mp4）。
+#### 方式二：增量渲染（新功能）🆕
+
+适用于需要**分段添加视频**或**实时预览**的场景。
+
+**步骤1 - 初始化会话**: `POST http://localhost:8001/api/render/init`
+```json
+{
+  "template": "classic",
+  "image_path": "/app/examples/cover.jpg"
+}
+```
+响应：
+```json
+{
+  "session_id": "uuid-string",
+  "segment_index": 0,
+  "status": "initialized"
+}
+```
+
+**步骤2 - 追加视频段落**: `POST http://localhost:8001/api/render/append`
+```json
+{
+  "session_id": "uuid-string",
+  "video_path": "/app/examples/v1.mp4"
+}
+```
+响应：
+```json
+{
+  "session_id": "uuid-string",
+  "segment_index": 1,
+  "transition_used": "gridflip",
+  "status": "rendering"
+}
+```
+
+**步骤3 - 完成合成**: `POST http://localhost:8001/api/render/finalize`
+```json
+{
+  "session_id": "uuid-string",
+  "output_filename": "my_video.mp4"  // 可选
+}
+```
+响应：
+```json
+{
+  "session_id": "uuid-string",
+  "video_url": "http://localhost:8001/videos/final_202512051430.mp4",
+  "total_segments": 3,
+  "status": "completed"
+}
+```
+
+**步骤4 - 查询状态**: `GET http://localhost:8001/api/render/status/{session_id}`
+```json
+{
+  "session_id": "uuid-string",
+  "template": "classic",
+  "status": "completed",
+  "total_segments": 3,
+  "total_frames": 1000
+}
+```
+
+> **转场顺序规则**: 每次 `append` 会按照模板配置的 `transitions` 列表顺序循环使用转场效果。例如 `classic` 模板依次使用：gridflip → inverted-page-curl → mosaic → perlin → stereo-viewer → gridflip...
 
 ### 3. 使用测试脚本
 
+**一次性渲染测试**:
 ```bash
 python3 test.py
 ```
+
+**增量渲染测试** 🆕:
+```bash
+python3 test_incremental.py
+```
+
+> 详细的增量渲染 API 文档请查看 [`INCREMENTAL_API.md`](./INCREMENTAL_API.md)
 
 ## ⚙️ 配置管理
 
